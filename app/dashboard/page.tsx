@@ -34,11 +34,11 @@ export default async function DashboardPage() {
             <StatsCards />
           </section>
 
-          <section className="mb-8">
+          <section id="new" className="mb-8 scroll-mt-8">
             <NewInterviewCard />
           </section>
 
-          <div className="grid gap-8 xl:grid-cols-2">
+          <div id="sessions" className="grid gap-8 xl:grid-cols-2 scroll-mt-8">
             <section className="xl:col-span-2 2xl:col-span-1">
               <RecentSessions />
             </section>

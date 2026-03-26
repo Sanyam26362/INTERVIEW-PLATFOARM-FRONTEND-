@@ -12,6 +12,25 @@ import { Transcript } from "@/components/report/transcript";
 import type { Report } from "@/lib/types";
 import { ArrowLeft, RotateCcw, Loader2 } from "lucide-react";
 
+/* Normalise the API response so both snake_case and camelCase fields work */
+function normalizeReport(raw: any): Report {
+  const s = raw.scores ?? raw.score ?? {};
+  return {
+    ...raw,
+    scores: {
+      communication:       Number(s.communication ?? 0),
+      technicalAccuracy:   Number(s.technicalAccuracy ?? s.technical_accuracy ?? s.technicalaccuracy ?? 0),
+      confidence:          Number(s.confidence ?? 0),
+      clarity:             Number(s.clarity ?? 0),
+      overall:             Number(s.overall ?? 0),
+    },
+    feedback:     raw.feedback ?? "",
+    strengths:    raw.strengths ?? [],
+    improvements: raw.improvements ?? [],
+    fillerWords:  raw.fillerWords ?? raw.filler_words ?? { count: 0, words: [] },
+  };
+}
+
 interface Props { params: Promise<{ reportId: string }> }
 
 export default function ReportPage({ params }: Props) {
@@ -22,8 +41,14 @@ export default function ReportPage({ params }: Props) {
 
   useEffect(() => {
     get(`/evaluation/report/${reportId}`)
-      .then((res) => setReport(res.data.data))
-      .catch(() => {})
+      .then((res) => {
+        console.log("📊 Raw report API response:", JSON.stringify(res.data, null, 2));
+        const data = res.data.data ?? res.data;
+        setReport(normalizeReport(data));
+      })
+      .catch((err) => {
+        console.error("❌ Report fetch error:", err);
+      })
       .finally(() => setLoading(false));
   }, [reportId]);
 

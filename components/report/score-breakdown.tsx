@@ -22,9 +22,9 @@ export function ScoreBreakdown({ scores }: Props) {
       {items.map((item) => (
         <div key={item.label} className="rounded-xl border border-border bg-card/50 p-5">
           <p className="text-sm text-muted-foreground">{item.label}</p>
-          <p className="mt-1 text-3xl font-bold text-foreground">{item.value.toFixed(1)}</p>
+          <p className="mt-1 text-3xl font-bold text-foreground">{(item.value ?? 0).toFixed(1)}</p>
           <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-white/10">
-            <div className={`h-full rounded-full ${color(item.value)}`} style={{ width: `${item.value * 10}%` }} />
+            <div className={`h-full rounded-full ${color(item.value ?? 0)}`} style={{ width: `${(item.value ?? 0) * 10}%` }} />
           </div>
         </div>
       ))}

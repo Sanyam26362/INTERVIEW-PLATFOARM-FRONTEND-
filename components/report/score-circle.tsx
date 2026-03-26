@@ -1,5 +1,6 @@
 interface Props { overall: number; }
-export function ScoreCircle({ overall }: Props) {
+export function ScoreCircle({ overall: rawOverall }: Props) {
+  const overall = rawOverall ?? 0;
   const pct = (overall / 10) * 100;
   const radius = 54;
   const circ = 2 * Math.PI * radius;

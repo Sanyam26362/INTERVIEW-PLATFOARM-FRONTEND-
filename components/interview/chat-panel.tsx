@@ -48,6 +48,7 @@ export function ChatPanel({ sessionId }: Props) {
   const isSpeakingRef = useRef(false);
   const socketInitialized = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const initialTriggerDone = useRef(false);
 
   // Keep state + ref in sync
   const setIsListeningBoth = (v: boolean) => { setIsListening(v); isListeningRef.current = v; };
@@ -114,7 +115,8 @@ export function ChatPanel({ sessionId }: Props) {
 
         setSessionLoaded(true);
 
-        if (session.transcript.length === 0) {
+        if (session.transcript.length === 0 && !initialTriggerDone.current) {
+          initialTriggerDone.current = true;
           setTimeout(() => triggerAIStart(d, l, []), 600);
         }
       })
