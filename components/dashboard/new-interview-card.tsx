@@ -22,10 +22,6 @@ const DOMAINS = [
 const LANGUAGES = [
   { value: "en", label: "English" },
   { value: "hi", label: "Hindi" },
-  { value: "ta", label: "Tamil" },
-  { value: "te", label: "Telugu" },
-  { value: "bn", label: "Bengali" },
-  { value: "mr", label: "Marathi" },
 ];
 
 export function NewInterviewCard() {

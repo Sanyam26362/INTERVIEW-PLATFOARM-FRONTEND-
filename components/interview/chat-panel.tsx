@@ -15,9 +15,7 @@ interface Message { id: string; role: "ai" | "user"; content: string; }
 interface Props { sessionId: string; }
 
 const LANG_MAP: Record<string, string> = {
-  en: "en-IN", hi: "hi-IN", ta: "ta-IN",
-  te: "te-IN", bn: "bn-IN", mr: "mr-IN",
-  gu: "gu-IN", kn: "kn-IN", ml: "ml-IN",
+  en: "en-IN", hi: "hi-IN",
 };
 
 export function ChatPanel({ sessionId }: Props) {

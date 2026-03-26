@@ -72,11 +72,4 @@ export const DOMAIN_LABELS: Record<string, string> = {
 export const LANGUAGE_LABELS: Record<string, string> = {
   en: "English",
   hi: "Hindi",
-  ta: "Tamil",
-  te: "Telugu",
-  bn: "Bengali",
-  mr: "Marathi",
-  gu: "Gujarati",
-  kn: "Kannada",
-  ml: "Malayalam",
 };
