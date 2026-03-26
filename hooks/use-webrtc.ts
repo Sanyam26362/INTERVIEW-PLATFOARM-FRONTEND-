@@ -30,10 +30,18 @@ export function useWebRTC(socket: Socket | null, sessionId: string) {
   const iceQueueRef = useRef<RTCIceCandidateInit[]>([]);
   const remoteDescSetRef = useRef(false);
 
+  // FIX #2: Mirror localStream in a ref so socket handlers can read the
+  // current value without being listed as effect dependencies.
+  // Putting `localStream` (state) in the useEffect dep array caused the
+  // effect to tear down and re-register every WebRTC listener the moment
+  // initLocalStream() resolved — dropping ICE candidates mid-negotiation.
+  const localStreamRef = useRef<MediaStream | null>(null);
+
   const initLocalStream = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       setLocalStream(stream);
+      localStreamRef.current = stream; // keep ref in sync
       return stream;
     } catch (error) {
       console.error('Error accessing media devices.', error);
@@ -55,79 +63,91 @@ export function useWebRTC(socket: Socket | null, sessionId: string) {
     }
   }, []);
 
-  const createPeerConnection = useCallback(
-    (stream: MediaStream) => {
-      if (pcRef.current && pcRef.current.signalingState !== 'closed') {
-        return pcRef.current;
+  // Creates a bare PeerConnection (no tracks) and wires up event handlers.
+  // Tracks are added separately so the answerer can call setRemoteDescription
+  // first (see handleOffer below).
+  const createPeerConnection = useCallback(() => {
+    if (pcRef.current && pcRef.current.signalingState !== 'closed') {
+      return pcRef.current;
+    }
+
+    const pc = new RTCPeerConnection(getIceServers());
+    pcRef.current = pc;
+    remoteDescSetRef.current = false;
+    iceQueueRef.current = [];
+
+    setRemoteStream(null);
+
+    pc.ontrack = (event) => {
+      console.log('Received remote track:', event.track.kind);
+      if (event.streams && event.streams[0]) {
+        setRemoteStream(event.streams[0]);
+      } else {
+        // Fallback: assemble an inbound stream from individual tracks
+        setRemoteStream((prev) => {
+          const next = prev ? new MediaStream(prev.getTracks()) : new MediaStream();
+          next.addTrack(event.track);
+          return next;
+        });
       }
+    };
 
-      const pc = new RTCPeerConnection(getIceServers());
-      pcRef.current = pc;
-      remoteDescSetRef.current = false;
-      iceQueueRef.current = [];
+    pc.onicecandidate = (event) => {
+      if (event.candidate && socket) {
+        socket.emit('webrtc_ice_candidate', {
+          sessionId,
+          candidate: event.candidate,
+        });
+      }
+    };
 
-      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+    pc.oniceconnectionstatechange = () => {
+      console.log('ICE Connection State:', pc.iceConnectionState);
+      if (pc.iceConnectionState === 'failed') {
+        console.warn('ICE failed — attempting restart');
+        pc.restartIce();
+      }
+    };
 
-      const inboundStream = new MediaStream();
-      setRemoteStream(null);
+    pc.onconnectionstatechange = () => {
+      console.log('Peer Connection State:', pc.connectionState);
+    };
 
-      pc.ontrack = (event) => {
-        console.log('Received remote track:', event.track.kind);
-        if (event.streams && event.streams[0]) {
-          setRemoteStream(event.streams[0]);
-        } else {
-          inboundStream.addTrack(event.track);
-          setRemoteStream(new MediaStream(inboundStream.getTracks()));
-        }
-      };
-
-      pc.onicecandidate = (event) => {
-        if (event.candidate && socket) {
-          socket.emit('webrtc_ice_candidate', {
-            sessionId,
-            candidate: event.candidate,
-          });
-        }
-      };
-
-      pc.oniceconnectionstatechange = () => {
-        console.log('ICE Connection State:', pc.iceConnectionState);
-        if (pc.iceConnectionState === 'failed') {
-          console.warn('ICE failed — attempting restart');
-          pc.restartIce();
-        }
-      };
-
-      pc.onconnectionstatechange = () => {
-        console.log('Peer Connection State:', pc.connectionState);
-      };
-
-      return pc;
-    },
-    [socket, sessionId]
-  );
+    return pc;
+  }, [socket, sessionId]);
 
   useEffect(() => {
     if (!socket) return;
 
     const handleOffer = async ({ offer }: { offer: RTCSessionDescriptionInit }) => {
       try {
-        let stream = localStream;
+        // Ensure we have a local stream ready before touching the PC
+        let stream = localStreamRef.current;
         if (!stream) {
           stream = await initLocalStream();
           if (!stream) return;
         }
 
-        const pc = createPeerConnection(stream);
+        const pc = createPeerConnection();
 
         if (pc.signalingState !== 'stable') {
           console.warn('Received offer in non-stable state:', pc.signalingState);
           return;
         }
 
+        // FIX #1: Set remote description BEFORE adding local tracks.
+        // Adding tracks first (old code) created extra transceivers that didn't
+        // match the offer, so the answerer's video was never sent back correctly.
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
         remoteDescSetRef.current = true;
         await flushIceQueue(pc);
+
+        // Now add local tracks — they slot into the transceivers the offer created
+        stream.getTracks().forEach((track) => {
+          // Avoid adding duplicate tracks if the PC was reused
+          const alreadyAdded = pc.getSenders().some((s) => s.track === track);
+          if (!alreadyAdded) pc.addTrack(track, stream!);
+        });
 
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
@@ -174,16 +194,28 @@ export function useWebRTC(socket: Socket | null, sessionId: string) {
       socket.off('webrtc_answer', handleAnswer);
       socket.off('webrtc_ice_candidate', handleIceCandidate);
     };
-  }, [socket, sessionId, localStream, createPeerConnection, initLocalStream, flushIceQueue]);
+
+    // FIX #2 (continued): `localStream` (state) deliberately excluded.
+    // Handlers read `localStreamRef.current` instead, so this effect stays
+    // stable for the lifetime of the socket connection and never drops
+    // ICE candidates due to a mid-negotiation re-registration.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socket, sessionId, createPeerConnection, initLocalStream, flushIceQueue]);
 
   const startCall = useCallback(async () => {
-    let stream = localStream;
+    let stream = localStreamRef.current;
     if (!stream) {
       stream = await initLocalStream();
     }
     if (!stream) return;
 
-    const pc = createPeerConnection(stream);
+    const pc = createPeerConnection();
+
+    // Add tracks for the offerer side (straightforward — no remote desc yet)
+    stream.getTracks().forEach((track) => {
+      const alreadyAdded = pc.getSenders().some((s) => s.track === track);
+      if (!alreadyAdded) pc.addTrack(track, stream!);
+    });
 
     if (pc.signalingState !== 'stable') {
       console.warn('Cannot create offer in state:', pc.signalingState);
@@ -197,28 +229,28 @@ export function useWebRTC(socket: Socket | null, sessionId: string) {
       socket.emit('webrtc_offer', { sessionId, offer });
       toast.success('Joining live interview stream...');
     }
-  }, [localStream, initLocalStream, createPeerConnection, socket, sessionId]);
+  }, [initLocalStream, createPeerConnection, socket, sessionId]);
 
   const stopCall = useCallback(() => {
     if (pcRef.current) {
       pcRef.current.close();
       pcRef.current = null;
     }
-    if (localStream) {
-      localStream.getTracks().forEach((track) => track.stop());
-      setLocalStream(null);
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current = null;
     }
+    setLocalStream(null);
     setRemoteStream(null);
     iceQueueRef.current = [];
     remoteDescSetRef.current = false;
-  }, [localStream]);
+  }, []);
 
   useEffect(() => {
     return () => {
       if (pcRef.current) pcRef.current.close();
-      if (localStream) localStream.getTracks().forEach((t) => t.stop());
+      if (localStreamRef.current) localStreamRef.current.getTracks().forEach((t) => t.stop());
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return { localStream, remoteStream, startCall, stopCall };
