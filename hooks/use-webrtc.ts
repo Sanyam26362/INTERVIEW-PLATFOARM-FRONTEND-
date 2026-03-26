@@ -7,7 +7,6 @@ const getIceServers = (): RTCConfiguration => {
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
   ];
-
   if (
     process.env.NEXT_PUBLIC_TURN_URL &&
     process.env.NEXT_PUBLIC_TURN_USERNAME &&
@@ -19,7 +18,6 @@ const getIceServers = (): RTCConfiguration => {
       credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL,
     });
   }
-
   return { iceServers };
 };
 
@@ -30,60 +28,61 @@ export function useWebRTC(socket: Socket | null, sessionId: string) {
   const iceQueueRef = useRef<RTCIceCandidateInit[]>([]);
   const remoteDescSetRef = useRef(false);
 
-  // FIX #2: Mirror localStream in a ref so socket handlers can read the
-  // current value without being listed as effect dependencies.
-  // Putting `localStream` (state) in the useEffect dep array caused the
-  // effect to tear down and re-register every WebRTC listener the moment
-  // initLocalStream() resolved — dropping ICE candidates mid-negotiation.
+  // BUG FIX 3: Mirror localStream in a ref so WebRTC socket listeners never need
+  // localStream as a useEffect dependency. Having it as a dep caused the effect
+  // to tear down and re-register all three WebRTC listeners (including
+  // webrtc_ice_candidate) the moment initLocalStream() resolved — dropping any
+  // ICE candidates that arrived during that brief re-registration window.
   const localStreamRef = useRef<MediaStream | null>(null);
 
+  // Exported so chat-panel can pre-init the camera without triggering an offer.
   const initLocalStream = useCallback(async () => {
+    if (localStreamRef.current) return localStreamRef.current;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       setLocalStream(stream);
-      localStreamRef.current = stream; // keep ref in sync
+      localStreamRef.current = stream;
+      console.log('[WebRTC] local stream ready, tracks:', stream.getTracks().map(t => t.kind));
       return stream;
     } catch (error) {
-      console.error('Error accessing media devices.', error);
+      console.error('[WebRTC] getUserMedia failed:', error);
       toast.error('Could not access camera or microphone.');
       return null;
     }
   }, []);
 
   const flushIceQueue = useCallback(async (pc: RTCPeerConnection) => {
+    console.log(`[WebRTC] flushing ${iceQueueRef.current.length} queued ICE candidates`);
     while (iceQueueRef.current.length > 0) {
       const candidate = iceQueueRef.current.shift();
       if (candidate) {
         try {
           await pc.addIceCandidate(new RTCIceCandidate(candidate));
         } catch (e) {
-          console.warn('Failed to add queued ICE candidate:', e);
+          console.warn('[WebRTC] failed to add queued ICE candidate:', e);
         }
       }
     }
   }, []);
 
-  // Creates a bare PeerConnection (no tracks) and wires up event handlers.
-  // Tracks are added separately so the answerer can call setRemoteDescription
-  // first (see handleOffer below).
   const createPeerConnection = useCallback(() => {
     if (pcRef.current && pcRef.current.signalingState !== 'closed') {
+      console.log('[WebRTC] reusing existing PC, state:', pcRef.current.signalingState);
       return pcRef.current;
     }
 
+    console.log('[WebRTC] creating new RTCPeerConnection');
     const pc = new RTCPeerConnection(getIceServers());
     pcRef.current = pc;
     remoteDescSetRef.current = false;
     iceQueueRef.current = [];
-
     setRemoteStream(null);
 
     pc.ontrack = (event) => {
-      console.log('Received remote track:', event.track.kind);
-      if (event.streams && event.streams[0]) {
+      console.log('[WebRTC] ontrack fired, kind:', event.track.kind, 'streams:', event.streams.length);
+      if (event.streams?.[0]) {
         setRemoteStream(event.streams[0]);
       } else {
-        // Fallback: assemble an inbound stream from individual tracks
         setRemoteStream((prev) => {
           const next = prev ? new MediaStream(prev.getTracks()) : new MediaStream();
           next.addTrack(event.track);
@@ -94,23 +93,25 @@ export function useWebRTC(socket: Socket | null, sessionId: string) {
 
     pc.onicecandidate = (event) => {
       if (event.candidate && socket) {
-        socket.emit('webrtc_ice_candidate', {
-          sessionId,
-          candidate: event.candidate,
-        });
+        console.log('[WebRTC] sending ICE candidate');
+        socket.emit('webrtc_ice_candidate', { sessionId, candidate: event.candidate });
       }
     };
 
     pc.oniceconnectionstatechange = () => {
-      console.log('ICE Connection State:', pc.iceConnectionState);
+      console.log('[WebRTC] ICE state:', pc.iceConnectionState);
       if (pc.iceConnectionState === 'failed') {
-        console.warn('ICE failed — attempting restart');
+        console.warn('[WebRTC] ICE failed — restarting');
         pc.restartIce();
       }
     };
 
     pc.onconnectionstatechange = () => {
-      console.log('Peer Connection State:', pc.connectionState);
+      console.log('[WebRTC] connection state:', pc.connectionState);
+    };
+
+    pc.onsignalingstatechange = () => {
+      console.log('[WebRTC] signaling state:', pc.signalingState);
     };
 
     return pc;
@@ -118,126 +119,147 @@ export function useWebRTC(socket: Socket | null, sessionId: string) {
 
   useEffect(() => {
     if (!socket) return;
+    console.log('[WebRTC] registering socket listeners on', socket.id);
 
     const handleOffer = async ({ offer }: { offer: RTCSessionDescriptionInit }) => {
+      console.log('[WebRTC] received offer');
       try {
-        // Ensure we have a local stream ready before touching the PC
+        // Ensure camera is ready before touching the PC.
         let stream = localStreamRef.current;
         if (!stream) {
+          console.log('[WebRTC] no local stream yet, initialising…');
           stream = await initLocalStream();
-          if (!stream) return;
+          if (!stream) {
+            console.error('[WebRTC] could not get local stream, aborting offer handling');
+            return;
+          }
         }
 
         const pc = createPeerConnection();
 
         if (pc.signalingState !== 'stable') {
-          console.warn('Received offer in non-stable state:', pc.signalingState);
+          console.warn('[WebRTC] offer arrived in non-stable state:', pc.signalingState, '— ignoring');
           return;
         }
 
-        // FIX #1: Set remote description BEFORE adding local tracks.
-        // Adding tracks first (old code) created extra transceivers that didn't
-        // match the offer, so the answerer's video was never sent back correctly.
+        // BUG FIX 2 (answerer side): Set remote description BEFORE adding local
+        // tracks. The offer's m-lines define the transceivers; adding tracks first
+        // creates extra, mismatched transceivers, so the answerer's video is never
+        // assigned to the correct transceiver on the offerer's side.
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
         remoteDescSetRef.current = true;
+        console.log('[WebRTC] remote description set (offer)');
         await flushIceQueue(pc);
 
-        // Now add local tracks — they slot into the transceivers the offer created
+        // Add tracks into the transceivers the offer just created.
         stream.getTracks().forEach((track) => {
-          // Avoid adding duplicate tracks if the PC was reused
           const alreadyAdded = pc.getSenders().some((s) => s.track === track);
-          if (!alreadyAdded) pc.addTrack(track, stream!);
+          if (!alreadyAdded) {
+            pc.addTrack(track, stream!);
+            console.log('[WebRTC] added local track:', track.kind);
+          }
         });
 
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
+        console.log('[WebRTC] sending answer');
         socket.emit('webrtc_answer', { sessionId, answer });
       } catch (error) {
-        console.error('Failed to handle offer:', error);
+        console.error('[WebRTC] handleOffer failed:', error);
       }
     };
 
     const handleAnswer = async ({ answer }: { answer: RTCSessionDescriptionInit }) => {
+      console.log('[WebRTC] received answer');
       try {
         const pc = pcRef.current;
-        if (!pc) return;
-
+        if (!pc) { console.warn('[WebRTC] no PC when answer arrived'); return; }
         if (pc.signalingState === 'have-local-offer') {
           await pc.setRemoteDescription(new RTCSessionDescription(answer));
           remoteDescSetRef.current = true;
+          console.log('[WebRTC] remote description set (answer)');
           await flushIceQueue(pc);
+        } else {
+          console.warn('[WebRTC] answer arrived in unexpected state:', pc.signalingState);
         }
       } catch (error) {
-        console.error('Failed to handle answer:', error);
+        console.error('[WebRTC] handleAnswer failed:', error);
       }
     };
 
     const handleIceCandidate = async ({ candidate }: { candidate: RTCIceCandidateInit }) => {
+      const pc = pcRef.current;
+      if (!pc || !remoteDescSetRef.current) {
+        console.log('[WebRTC] queuing ICE candidate (no PC or remote desc yet)');
+        iceQueueRef.current.push(candidate);
+        return;
+      }
       try {
-        const pc = pcRef.current;
-        if (!pc || !remoteDescSetRef.current) {
-          iceQueueRef.current.push(candidate);
-          return;
-        }
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
       } catch (error) {
-        console.error('Failed to handle ICE candidate:', error);
+        console.error('[WebRTC] addIceCandidate failed:', error);
       }
     };
 
     socket.on('webrtc_offer', handleOffer);
     socket.on('webrtc_answer', handleAnswer);
     socket.on('webrtc_ice_candidate', handleIceCandidate);
+    console.log('[WebRTC] listeners registered');
 
     return () => {
       socket.off('webrtc_offer', handleOffer);
       socket.off('webrtc_answer', handleAnswer);
       socket.off('webrtc_ice_candidate', handleIceCandidate);
+      console.log('[WebRTC] listeners removed');
     };
 
-    // FIX #2 (continued): `localStream` (state) deliberately excluded.
-    // Handlers read `localStreamRef.current` instead, so this effect stays
-    // stable for the lifetime of the socket connection and never drops
-    // ICE candidates due to a mid-negotiation re-registration.
+    // localStream deliberately NOT in deps — see BUG FIX 3 above.
+    // Handlers read localStreamRef.current instead, so the effect stays stable
+    // for the lifetime of the socket and never drops ICE candidates.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket, sessionId, createPeerConnection, initLocalStream, flushIceQueue]);
 
+  // Called by the peer who was already in the room (receives peer_joined).
+  // Initialises camera then creates and sends the offer.
   const startCall = useCallback(async () => {
+    console.log('[WebRTC] startCall invoked');
     let stream = localStreamRef.current;
-    if (!stream) {
-      stream = await initLocalStream();
-    }
-    if (!stream) return;
+    if (!stream) stream = await initLocalStream();
+    if (!stream) { console.error('[WebRTC] startCall: no stream, aborting'); return; }
 
     const pc = createPeerConnection();
 
-    // Add tracks for the offerer side (straightforward — no remote desc yet)
+    // Add tracks for the offerer side.
     stream.getTracks().forEach((track) => {
       const alreadyAdded = pc.getSenders().some((s) => s.track === track);
-      if (!alreadyAdded) pc.addTrack(track, stream!);
+      if (!alreadyAdded) {
+        pc.addTrack(track, stream!);
+        console.log('[WebRTC] offerer added track:', track.kind);
+      }
     });
 
     if (pc.signalingState !== 'stable') {
-      console.warn('Cannot create offer in state:', pc.signalingState);
+      console.warn('[WebRTC] startCall: unexpected signaling state:', pc.signalingState);
       return;
     }
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
+    console.log('[WebRTC] sending offer');
 
     if (socket) {
       socket.emit('webrtc_offer', { sessionId, offer });
-      toast.success('Joining live interview stream...');
+      toast.success('Joining live interview stream…');
+    } else {
+      console.error('[WebRTC] startCall: socket is null, offer not sent!');
     }
   }, [initLocalStream, createPeerConnection, socket, sessionId]);
 
   const stopCall = useCallback(() => {
-    if (pcRef.current) {
-      pcRef.current.close();
-      pcRef.current = null;
-    }
+    console.log('[WebRTC] stopCall');
+    if (pcRef.current) { pcRef.current.close(); pcRef.current = null; }
     if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current.getTracks().forEach((t) => t.stop());
       localStreamRef.current = null;
     }
     setLocalStream(null);
@@ -253,5 +275,5 @@ export function useWebRTC(socket: Socket | null, sessionId: string) {
     };
   }, []);
 
-  return { localStream, remoteStream, startCall, stopCall };
+  return { localStream, remoteStream, startCall, stopCall, initLocalStream };
 }

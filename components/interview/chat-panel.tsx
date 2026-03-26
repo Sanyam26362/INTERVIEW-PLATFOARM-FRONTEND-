@@ -19,6 +19,7 @@ interface Message {
   content: string;
   translatedContent?: string;
 }
+
 interface Props {
   sessionId: string;
 }
@@ -43,10 +44,10 @@ export function ChatPanel({ sessionId }: Props) {
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [sessionLoaded, setSessionLoaded] = useState(false);
   const [activeSocket, setActiveSocket] = useState<any>(null);
-  // ✅ NEW: Track peer connection status
   const [peerConnected, setPeerConnected] = useState(false);
 
-  const { localStream, remoteStream, startCall, stopCall } = useWebRTC(activeSocket, sessionId);
+  // ✅ FIX 1: Destructured initLocalStream from useWebRTC
+  const { localStream, remoteStream, startCall, stopCall, initLocalStream } = useWebRTC(activeSocket, sessionId);
 
   // ─── REFS ────
   const modeRef = useRef<"text" | "voice" | "live">("text");
@@ -62,7 +63,10 @@ export function ChatPanel({ sessionId }: Props) {
   const socketInitialized = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const initialTriggerDone = useRef(false);
-  // ✅ NEW: Ref to startCall so socket listeners can call it without stale closures
+  
+  // ✅ FIX 2: Added pendingPeerJoinedRef to handle the timing race condition
+  const pendingPeerJoinedRef = useRef(false);
+
   const startCallRef = useRef(startCall);
   useEffect(() => {
     startCallRef.current = startCall;
@@ -74,6 +78,7 @@ export function ChatPanel({ sessionId }: Props) {
 
   const scrollToBottom = () =>
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  
   useEffect(() => {
     scrollToBottom();
   }, [messages, isTyping]);
@@ -133,6 +138,19 @@ export function ChatPanel({ sessionId }: Props) {
 
         setSessionLoaded(true);
 
+        // ✅ FIX 2: Pre-warm the camera for live mode so it's ready when the offer arrives.
+        if (m === "live" && initLocalStream) {
+          initLocalStream();
+        }
+
+        // ✅ FIX 2: Replay peer_joined if it fired before we knew the mode.
+        if (m === "live" && pendingPeerJoinedRef.current) {
+          pendingPeerJoinedRef.current = false;
+          console.log("[Chat] replaying deferred peer_joined → startCall");
+          toast.info("Peer already here! Starting video...");
+          setTimeout(() => { startCallRef.current(); }, 500);
+        }
+
         if (
           session.transcript.length === 0 &&
           !initialTriggerDone.current &&
@@ -143,7 +161,7 @@ export function ChatPanel({ sessionId }: Props) {
         }
       })
       .catch(() => toast.error("Could not load session. Please refresh."));
-  }, [sessionId]);
+  }, [sessionId, initLocalStream, get]);
 
   useEffect(() => {
     if (socketInitialized.current) return;
@@ -194,20 +212,21 @@ export function ChatPanel({ sessionId }: Props) {
         if (modeRef.current === "voice") speakTextWithRef(text);
       });
 
-      // ✅ NEW: When server says peer joined, WE (the one already in the room)
-      // initialize our camera and send the offer
+      // ✅ FIX 2: Handle deferred peer_joined if session is still loading
       socket.on("peer_joined", async () => {
-        if (modeRef.current !== "live") return;
         setPeerConnected(true);
+        if (modeRef.current !== "live") {
+          // Session data hasn't loaded yet — remember this event and handle it
+          // in the session load effect once we know the mode.
+          console.log("[Chat] peer_joined fired before session loaded, deferring startCall");
+          pendingPeerJoinedRef.current = true;
+          return;
+        }
+        console.log("[Chat] peer_joined: starting call");
         toast.info("Peer joined! Starting video...");
-        // Small delay to ensure both sides have their sockets stable
-        setTimeout(() => {
-          startCallRef.current();
-        }, 500);
+        setTimeout(() => { startCallRef.current(); }, 500);
       });
 
-      // ✅ NEW: When WE join and someone is already there, we just init our camera.
-      // The other person will send us the offer via peer_joined event on their side.
       socket.on("room_size", async ({ size }: { size: number }) => {
         if (modeRef.current !== "live") return;
         if (size >= 2) {
@@ -215,7 +234,6 @@ export function ChatPanel({ sessionId }: Props) {
         }
       });
 
-      // ✅ NEW: Handle peer disconnecting
       socket.on("peer_left", () => {
         setPeerConnected(false);
         toast.warning("Peer disconnected.");
@@ -243,7 +261,7 @@ export function ChatPanel({ sessionId }: Props) {
       s.off("error");
       s.off("connect_error");
     };
-  }, [sessionId]);
+  }, [sessionId, getToken, post]);
 
   const setIsListeningBoth = (v: boolean) => {
     setIsListening(v);
@@ -500,7 +518,6 @@ export function ChatPanel({ sessionId }: Props) {
             <div className="flex items-center gap-3">
               <div
                 className={`h-2 w-2 rounded-full ${
-                  // ✅ Show green when remote VIDEO stream is active
                   remoteStream
                     ? "bg-green-500"
                     : peerConnected
@@ -545,11 +562,11 @@ export function ChatPanel({ sessionId }: Props) {
             </div>
           </div>
 
-          {/* ✅ Manual fallback button — only show if camera not started yet */}
+          {/* ✅ FIX 3: Changed onClick from startCall to initLocalStream to prevent offer glare */}
           {!localStream && (
             <div className="flex justify-center mt-4">
               <Button
-                onClick={startCall}
+                onClick={initLocalStream}
                 className="gap-2 bg-blue-600 hover:bg-blue-700 text-white"
               >
                 <Video className="h-4 w-4" /> Start Camera
