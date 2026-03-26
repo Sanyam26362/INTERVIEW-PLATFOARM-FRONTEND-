@@ -1,0 +1,2 @@
+.next/types/validator.ts(105,39): error TS2307: Cannot find module '../../app/signin/page.js' or its corresponding type declarations.
+.next/types/validator.ts(114,39): error TS2307: Cannot find module '../../app/signup/page.js' or its corresponding type declarations.
