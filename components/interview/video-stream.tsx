@@ -1,5 +1,4 @@
 "use client";
-
 import { useEffect, useRef } from "react";
 
 interface VideoStreamProps {
@@ -12,26 +11,28 @@ export function VideoStream({ stream, muted = false, label }: VideoStreamProps) 
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
-    if (videoRef.current && stream) {
+    if (!videoRef.current) return;
+    // ✅ FIX: Always reassign srcObject, even if stream reference changes
+    if (videoRef.current.srcObject !== stream) {
       videoRef.current.srcObject = stream;
     }
   }, [stream]);
 
-  if (!stream) {
-    return (
-      <div className="flex h-full w-full items-center justify-center bg-black/50 text-muted-foreground text-sm">
-        Waiting for {label}...
-      </div>
-    );
-  }
-
   return (
-    <video
-      ref={videoRef}
-      autoPlay
-      playsInline
-      muted={muted}
-      className="h-full w-full object-cover"
-    />
+    <div className="relative h-full w-full bg-black">
+      {/* ✅ Always render the <video> tag — hiding it avoids re-mount issues */}
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted={muted}
+        className={`h-full w-full object-cover ${!stream ? "hidden" : ""}`}
+      />
+      {!stream && (
+        <div className="absolute inset-0 flex items-center justify-center text-muted-foreground text-sm">
+          Waiting for {label}...
+        </div>
+      )}
+    </div>
   );
 }
