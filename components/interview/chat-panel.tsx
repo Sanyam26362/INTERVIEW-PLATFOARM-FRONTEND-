@@ -121,6 +121,12 @@ export function ChatPanel({ sessionId }: Props) {
       setActiveSocket(socket);
       socket.emit("join_session", { sessionId });
 
+      // NEW: Listen for raw text messages from the peer
+      socket.on("peer_message", ({ message }: { message: string }) => {
+        const peerMsg: Message = { id: Date.now().toString(), role: "peer", content: message };
+        setMessages((prev) => [...prev, peerMsg]);
+      });
+
       socket.on("translation_result", ({ original, translated }) => {
         setMessages((prev) => 
           prev.map((m) => m.content === original ? { ...m, translatedContent: translated } : m)
@@ -151,6 +157,7 @@ export function ChatPanel({ sessionId }: Props) {
 
     return () => {
       const s = connectSocket();
+      s.off("peer_message"); // Cleanup
       s.off("ai_response");
       s.off("translation_result");
       s.off("error");
@@ -239,9 +246,10 @@ export function ChatPanel({ sessionId }: Props) {
     historyRef.current = newHistory;
     setInput("");
 
-    // Phase 3: Trigger translation in Live mode instead of AI
+    // NEW: Trigger translation AND send raw message to peer in Live mode
     if (modeRef.current === "live") {
        const socket = connectSocket();
+       socket.emit("peer_message", { sessionId, message: text });
        socket.emit("translate_message", { sessionId, text, targetLanguage: languageRef.current === 'en' ? 'hi' : 'en' });
        return;
     }
@@ -319,7 +327,7 @@ export function ChatPanel({ sessionId }: Props) {
         </div>
       </div>
 
-      {/* NEW: WebRTC Live Video Grid with Copy Link Banner */}
+      {/* WebRTC Live Video Grid with Copy Link Banner */}
       {isLiveMode && (
         <div className="p-4 border-b border-white/10 bg-black/20">
             
@@ -380,6 +388,7 @@ export function ChatPanel({ sessionId }: Props) {
                 message.role === "user" ? "bg-purple-600 text-white" : "bg-white/10 text-foreground"
               }`}>
                 {message.role === "ai" && <p className="text-xs font-medium text-purple-400 mb-1">AI Interviewer</p>}
+                {message.role === "peer" && <p className="text-xs font-medium text-blue-400 mb-1">Peer</p>}
                 
                 <p className="text-sm leading-relaxed">{message.content}</p>
                 
@@ -411,7 +420,6 @@ export function ChatPanel({ sessionId }: Props) {
       <div className="border-t border-white/10 p-4">
         <div className="mx-auto max-w-3xl">
           {isVoiceMode ? (
-            // --- BIG VOICE AI UI ---
             <div className="flex flex-col items-center gap-3">
               <p className="text-xs text-muted-foreground transition-all">
                 {isListening ? "🔴 Listening — speak your answer..." :
@@ -420,7 +428,6 @@ export function ChatPanel({ sessionId }: Props) {
                  "Tap the mic to speak, or type below"}
               </p>
               <div className="flex items-center gap-4 w-full">
-                {/* Big mic button */}
                 <Button
                   onClick={toggleMic}
                   disabled={isTyping || isSpeaking || isEnding}
@@ -434,7 +441,6 @@ export function ChatPanel({ sessionId }: Props) {
                   {isListening ? <MicOff className="h-6 w-6" /> : <Mic className="h-6 w-6" />}
                 </Button>
                 
-                {/* Text fallback */}
                 <div className="flex flex-1 gap-2">
                   <input
                     type="text"
@@ -467,7 +473,6 @@ export function ChatPanel({ sessionId }: Props) {
               )}
             </div>
           ) : (
-            // --- STANDARD TEXT / LIVE PEER UI ---
             <div>
               <p className="mb-2 text-xs text-muted-foreground">Press Enter to send {isLiveMode && "and translate"}</p>
               <div className="flex items-center gap-3">
