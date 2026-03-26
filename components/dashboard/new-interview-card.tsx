@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Play, MessageSquare, Mic, Loader2 } from "lucide-react";
+import { Play, MessageSquare, Mic, Video, Loader2 } from "lucide-react";
 import { useAuthApi } from "@/hooks/use-auth-api";
 import { toast } from "sonner";
 
@@ -86,6 +86,9 @@ export function NewInterviewCard() {
               </ToggleGroupItem>
               <ToggleGroupItem value="voice" className="gap-2 border border-border bg-secondary/50 data-[state=on]:bg-primary data-[state=on]:text-primary-foreground">
                 <Mic className="h-4 w-4" /> Voice
+              </ToggleGroupItem>
+              <ToggleGroupItem value="live" className="gap-2 border border-border bg-secondary/50 data-[state=on]:bg-primary data-[state=on]:text-primary-foreground">
+                <Video className="h-4 w-4" /> Live
               </ToggleGroupItem>
             </ToggleGroup>
           </div>

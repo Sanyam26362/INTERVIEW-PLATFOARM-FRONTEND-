@@ -1,17 +1,19 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Mic, MicOff, Send, PhoneOff, Loader2, Volume2 } from "lucide-react";
+import { Mic, MicOff, Send, PhoneOff, Loader2, Volume2, Video, Languages, Copy } from "lucide-react";
 import { connectSocket, disconnectSocket } from "@/lib/socket";
 import { useAuthApi } from "@/hooks/use-auth-api";
 import { DOMAIN_LABELS, LANGUAGE_LABELS } from "@/lib/types";
 import { toast } from "sonner";
+import { useWebRTC } from "@/hooks/use-webrtc";
+import { VideoStream } from "./video-stream"; 
 
-interface Message { id: string; role: "ai" | "user"; content: string; }
+interface Message { id: string; role: "ai" | "user" | "peer"; content: string; translatedContent?: string; }
 interface Props { sessionId: string; }
 
 const LANG_MAP: Record<string, string> = {
@@ -32,9 +34,12 @@ export function ChatPanel({ sessionId }: Props) {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [sessionLoaded, setSessionLoaded] = useState(false);
+  const [activeSocket, setActiveSocket] = useState<any>(null);
 
-  // ─── REFS (always current value, safe inside closures) ────
-  const modeRef = useRef<"text" | "voice">("text");
+  const { localStream, remoteStream, startCall, stopCall } = useWebRTC(activeSocket, sessionId);
+
+  // ─── REFS ────
+  const modeRef = useRef<"text" | "voice" | "live">("text");
   const languageRef = useRef("en");
   const domainRef = useRef("sde");
   const historyRef = useRef<{ role: string; content: string }[]>([]);
@@ -48,52 +53,37 @@ export function ChatPanel({ sessionId }: Props) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const initialTriggerDone = useRef(false);
 
-  // Keep state + ref in sync
   const setIsListeningBoth = (v: boolean) => { setIsListening(v); isListeningRef.current = v; };
   const setIsTypingBoth = (v: boolean) => { setIsTyping(v); isTypingRef.current = v; };
   const setIsSpeakingBoth = (v: boolean) => { setIsSpeaking(v); isSpeakingRef.current = v; };
 
-  // Display state (only for render)
   const [domain, setDomain] = useState("sde");
   const [language, setLanguage] = useState("en");
-  const [mode, setMode] = useState<"text" | "voice">("text");
+  const [mode, setMode] = useState<"text" | "voice" | "live">("text");
 
-  const scrollToBottom = () =>
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-
+  const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   useEffect(() => { scrollToBottom(); }, [messages, isTyping]);
 
-  // Check voice support
   useEffect(() => {
-    const supported =
-      typeof window !== "undefined" &&
-      ("SpeechRecognition" in window || "webkitSpeechRecognition" in window) &&
-      "speechSynthesis" in window;
+    const supported = typeof window !== "undefined" && ("SpeechRecognition" in window || "webkitSpeechRecognition" in window) && "speechSynthesis" in window;
     setVoiceSupported(supported);
     if (supported) {
       synthRef.current = window.speechSynthesis;
-      // Pre-load voices (Chrome loads them async)
       window.speechSynthesis.getVoices();
-      window.speechSynthesis.onvoiceschanged = () => {
-        window.speechSynthesis.getVoices(); // cache them
-      };
+      window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
     }
   }, []);
 
-  // Timer
   useEffect(() => {
     const interval = setInterval(() => setTimer((p) => p + 1), 1000);
     return () => clearInterval(interval);
   }, []);
 
-  // ─── Load session ─────────────────────────────────────────
   useEffect(() => {
     get(`/sessions/${sessionId}`)
       .then((res) => {
         const session = res.data.data;
-
-        // Update both state (for display) and refs (for closures)
-        const m = session.mode === "voice" ? "voice" : "text";
+        const m = session.mode === "live" ? "live" : session.mode === "voice" ? "voice" : "text";
         const l = session.language;
         const d = session.domain;
 
@@ -113,7 +103,7 @@ export function ChatPanel({ sessionId }: Props) {
 
         setSessionLoaded(true);
 
-        if (session.transcript.length === 0 && !initialTriggerDone.current) {
+        if (session.transcript.length === 0 && !initialTriggerDone.current && m !== "live") {
           initialTriggerDone.current = true;
           setTimeout(() => triggerAIStart(d, l, []), 600);
         }
@@ -121,7 +111,6 @@ export function ChatPanel({ sessionId }: Props) {
       .catch(() => toast.error("Could not load session. Please refresh."));
   }, [sessionId]);
 
-  // ─── Socket setup (runs once, uses refs — no stale closures) ──
   useEffect(() => {
     if (socketInitialized.current) return;
     socketInitialized.current = true;
@@ -129,36 +118,32 @@ export function ChatPanel({ sessionId }: Props) {
     const setupSocket = async () => {
       const token = await getToken();
       const socket = connectSocket(token || "");
+      setActiveSocket(socket);
       socket.emit("join_session", { sessionId });
+
+      socket.on("translation_result", ({ original, translated }) => {
+        setMessages((prev) => 
+          prev.map((m) => m.content === original ? { ...m, translatedContent: translated } : m)
+        );
+      });
 
       socket.on("ai_response", async ({ text }: { text: string }) => {
         setIsTypingBoth(false);
-
-        const aiMsg: Message = {
-          id: Date.now().toString(),
-          role: "ai",
-          content: text,
-        };
+        const aiMsg: Message = { id: Date.now().toString(), role: "ai", content: text };
         setMessages((prev) => [...prev, aiMsg]);
         historyRef.current = [...historyRef.current, { role: "assistant", content: text }];
 
-        // Save to DB
         post(`/sessions/${sessionId}/turn`, {
-          speaker: "ai",
-          text,
-          language: languageRef.current,  // ✅ ref — always current
+          speaker: "ai", text, language: languageRef.current,
         }).catch(() => {});
 
-        // ✅ Use ref here — this is the fix. modeRef.current is always fresh
-        if (modeRef.current === "voice") {
-          speakTextWithRef(text);
-        }
+        if (modeRef.current === "voice") speakTextWithRef(text);
       });
 
       socket.on("connect_error", () => toast.error("Connection lost. Retrying..."));
       socket.on("error", () => {
         setIsTypingBoth(false);
-        toast.error("AI response failed. Try again.");
+        toast.error("An error occurred with the stream.");
       });
     };
 
@@ -167,112 +152,70 @@ export function ChatPanel({ sessionId }: Props) {
     return () => {
       const s = connectSocket();
       s.off("ai_response");
+      s.off("translation_result");
       s.off("error");
       s.off("connect_error");
     };
   }, [sessionId]);
 
-  // ─── TTS using refs (no stale closure) ─────────────────────
-  // This is defined as a plain function (not useCallback) so it always
-  // reads the latest refs — no closure trap
   const speakTextWithRef = (text: string) => {
     if (!synthRef.current) return;
-
     synthRef.current.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
-    utteranceRef.current = utterance; // Prevents Chrome Garbage Collection bug!
+    utteranceRef.current = utterance; 
     const langCode = LANG_MAP[languageRef.current] || "en-IN";
     utterance.lang = langCode;
-    utterance.rate = 0.92;
-    utterance.pitch = 1;
-
-    // Try to find a matching voice
+    
     const voices = synthRef.current.getVoices();
-    const langPrefix = langCode.split("-")[0];
-    const match =
-      voices.find((v) => v.lang === langCode) ||
-      voices.find((v) => v.lang.startsWith(langPrefix));
+    const match = voices.find((v) => v.lang === langCode) || voices.find((v) => v.lang.startsWith(langCode.split("-")[0]));
     if (match) utterance.voice = match;
 
     utterance.onstart = () => setIsSpeakingBoth(true);
-
     utterance.onend = () => {
       setIsSpeakingBoth(false);
-      // ✅ ref — always current, no stale closure
-      if (modeRef.current === "voice") {
-        setTimeout(() => startListeningWithRef(), 500);
-      }
+      if (modeRef.current === "voice") setTimeout(() => startListeningWithRef(), 500);
     };
-
     utterance.onerror = () => {
       setIsSpeakingBoth(false);
-      // Even if TTS fails, auto-listen in voice mode
-      if (modeRef.current === "voice") {
-        setTimeout(() => startListeningWithRef(), 500);
-      }
+      if (modeRef.current === "voice") setTimeout(() => startListeningWithRef(), 500);
     };
-
     synthRef.current.speak(utterance);
   };
 
-  // ─── STT using refs ────────────────────────────────────────
   const startListeningWithRef = () => {
     if (!voiceSupported) return;
     if (isListeningRef.current || isSpeakingRef.current || isTypingRef.current) return;
 
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) return;
 
     const recognition = new SpeechRecognition();
     recognitionRef.current = recognition;
     recognition.lang = LANG_MAP[languageRef.current] || "en-IN";
     recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-
+    
     let shouldRestart = false;
 
     recognition.onstart = () => setIsListeningBoth(true);
-
     recognition.onresult = (event: any) => {
       const transcript = event.results[0][0].transcript.trim();
       setIsListeningBoth(false);
-      shouldRestart = false; // Prevent restart since we got input
+      shouldRestart = false; 
       if (!transcript) return;
-
       setInput(transcript);
-
-      // ✅ ref — auto-send in voice mode
-      if (modeRef.current === "voice") {
-        sendMessageWithRef(transcript);
-      }
+      if (modeRef.current === "voice") sendMessageWithRef(transcript);
     };
-
     recognition.onerror = (event: any) => {
       setIsListeningBoth(false);
-      if (event.error === "not-allowed") {
-        toast.error("Microphone permission denied. Please allow mic access.");
-      } else if (event.error === "no-speech") {
-        shouldRestart = true; // Auto-restart on silent timeout
-      } else if (event.error !== "aborted") {
-        toast.error(`Mic error: ${event.error}`);
-      }
+      if (event.error === "no-speech") shouldRestart = true;
     };
-
     recognition.onend = () => {
       setIsListeningBoth(false);
-      // Restart seamlessly if simply timed out
       if (shouldRestart && modeRef.current === "voice" && !isTypingRef.current && !isSpeakingRef.current) {
         setTimeout(() => startListeningWithRef(), 250);
       }
     };
-
-    try {
-      recognition.start();
-    } catch (e) {
-      setIsListeningBoth(false);
-    }
+    try { recognition.start(); } catch (e) { setIsListeningBoth(false); }
   };
 
   const stopListening = () => {
@@ -285,7 +228,6 @@ export function ChatPanel({ sessionId }: Props) {
     else startListeningWithRef();
   };
 
-  // ─── Send message using refs ──────────────────────────────
   const sendMessageWithRef = async (text: string) => {
     if (!text.trim() || isTypingRef.current) return;
     if (synthRef.current?.speaking) synthRef.current.cancel();
@@ -297,24 +239,24 @@ export function ChatPanel({ sessionId }: Props) {
     historyRef.current = newHistory;
     setInput("");
 
+    // Phase 3: Trigger translation in Live mode instead of AI
+    if (modeRef.current === "live") {
+       const socket = connectSocket();
+       socket.emit("translate_message", { sessionId, text, targetLanguage: languageRef.current === 'en' ? 'hi' : 'en' });
+       return;
+    }
+
     await post(`/sessions/${sessionId}/turn`, {
-      speaker: "user",
-      text,
-      language: languageRef.current,
+      speaker: "user", text, language: languageRef.current,
     }).catch(() => {});
 
     setIsTypingBoth(true);
     const socket = connectSocket();
     socket.emit("user_message", {
-      sessionId,
-      message: text,
-      domain: domainRef.current,
-      language: languageRef.current,
-      history: newHistory,
+      sessionId, message: text, domain: domainRef.current, language: languageRef.current, history: newHistory,
     });
   };
 
-  // Wrapper for button click (uses current input state)
   const handleSend = () => {
     const text = input.trim();
     if (text) sendMessageWithRef(text);
@@ -324,19 +266,15 @@ export function ChatPanel({ sessionId }: Props) {
     setIsTypingBoth(true);
     const socket = connectSocket();
     socket.emit("user_message", {
-      sessionId,
-      message: "Please start the interview with a warm welcome and your first question.",
-      domain: d,
-      language: l,
-      history: h,
+      sessionId, message: "Please start the interview with a warm welcome and your first question.", domain: d, language: l, history: h,
     });
   };
 
-  // ─── End Interview ────────────────────────────────────────
   const handleEnd = async () => {
     setIsEnding(true);
     synthRef.current?.cancel();
     stopListening();
+    stopCall(); // Stop WebRTC
     try {
       await patch(`/sessions/${sessionId}/complete`);
       toast.success("Generating your report...");
@@ -350,10 +288,9 @@ export function ChatPanel({ sessionId }: Props) {
     }
   };
 
-  const formatTime = (s: number) =>
-    `${Math.floor(s / 60).toString().padStart(2, "0")}:${(s % 60).toString().padStart(2, "0")}`;
-
+  const formatTime = (s: number) => `${Math.floor(s / 60).toString().padStart(2, "0")}:${(s % 60).toString().padStart(2, "0")}`;
   const isVoiceMode = mode === "voice";
+  const isLiveMode = mode === "live";
 
   return (
     <div className="flex h-full flex-col">
@@ -366,8 +303,8 @@ export function ChatPanel({ sessionId }: Props) {
           <Badge variant="outline" className="border-white/20 text-muted-foreground">
             {LANGUAGE_LABELS[language] || language}
           </Badge>
-          <Badge variant="outline" className={`border-white/20 ${isVoiceMode ? "text-green-400 border-green-500/30" : "text-muted-foreground"}`}>
-            {isVoiceMode ? "🎙 Voice" : "⌨ Text"}
+          <Badge variant="outline" className={`border-white/20 ${isVoiceMode ? "text-green-400 border-green-500/30" : isLiveMode ? "text-blue-400 border-blue-500/30" : "text-muted-foreground"}`}>
+            {isLiveMode ? "🎥 Live Peer" : isVoiceMode ? "🎙 Voice AI" : "⌨ Text AI"}
           </Badge>
         </div>
         <div className="flex items-center gap-4">
@@ -382,44 +319,76 @@ export function ChatPanel({ sessionId }: Props) {
         </div>
       </div>
 
-      {/* Voice status bar */}
-      {isVoiceMode && (
-        <div className={`flex items-center justify-center gap-2 py-2 text-xs font-medium transition-all ${
-          isListening ? "bg-red-500/10 text-red-400" :
-          isSpeaking ? "bg-blue-500/10 text-blue-400" :
-          "bg-white/5 text-muted-foreground"
-        }`}>
-          {isListening && <><span className="h-2 w-2 animate-pulse rounded-full bg-red-400" /> Listening — speak now...</>}
-          {isSpeaking && <><Volume2 className="h-3 w-3 animate-pulse" /> AI is speaking...</>}
-          {!isListening && !isSpeaking && !isTyping && "Voice mode active — AI will speak and listen automatically"}
-          {isTyping && !isSpeaking && <><span className="h-2 w-2 animate-bounce rounded-full bg-purple-400" /> AI is thinking...</>}
+      {/* NEW: WebRTC Live Video Grid with Copy Link Banner */}
+      {isLiveMode && (
+        <div className="p-4 border-b border-white/10 bg-black/20">
+            
+            <div className="flex items-center justify-between max-w-4xl mx-auto mb-4 rounded-lg bg-blue-500/10 border border-blue-500/20 px-4 py-3">
+              <div className="flex items-center gap-3">
+                <div className={`h-2 w-2 rounded-full ${remoteStream ? "bg-green-500" : "bg-blue-500 animate-pulse"}`} />
+                <p className="text-sm text-blue-100">
+                  {remoteStream 
+                    ? "Peer connected securely." 
+                    : "Waiting for peer. Share this session link for them to join."}
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  navigator.clipboard.writeText(window.location.href);
+                  toast.success("Invite link copied! Send it to your peer.");
+                }}
+                className="gap-2 border-blue-500/30 bg-blue-500/10 hover:bg-blue-500/20 text-blue-300 transition-colors"
+              >
+                <Copy className="h-4 w-4" />
+                Copy Invite Link
+              </Button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 max-w-4xl mx-auto">
+              <div className="relative aspect-video bg-black/50 rounded-xl overflow-hidden border border-white/10">
+                <VideoStream stream={localStream} muted={true} label="Camera" />
+                <div className="absolute bottom-3 left-3 bg-black/60 backdrop-blur-sm px-2.5 py-1 text-xs font-medium rounded-md text-white flex items-center gap-2">
+                   <Video className="h-3 w-3" /> You
+                </div>
+              </div>
+              <div className="relative aspect-video bg-black/50 rounded-xl overflow-hidden border border-white/10">
+                <VideoStream stream={remoteStream} label="Peer" />
+                <div className="absolute bottom-3 left-3 bg-black/60 backdrop-blur-sm px-2.5 py-1 text-xs font-medium rounded-md text-white flex items-center gap-2">
+                   <Video className="h-3 w-3" /> Peer
+                </div>
+              </div>
+            </div>
+            
+            {!localStream && (
+              <div className="flex justify-center mt-4">
+                <Button onClick={startCall} className="gap-2 bg-blue-600 hover:bg-blue-700 text-white">
+                  <Video className="h-4 w-4" /> Start Live Stream
+                </Button>
+              </div>
+            )}
         </div>
       )}
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-6">
         <div className="mx-auto max-w-3xl space-y-6">
-          {messages.length === 0 && !isTyping && sessionLoaded && (
-            <div className="flex flex-col items-center justify-center py-20 gap-3">
-              <div className="h-8 w-8 animate-spin rounded-full border-2 border-purple-500 border-t-transparent" />
-              <p className="text-muted-foreground text-sm">Starting your interview...</p>
-            </div>
-          )}
-          {messages.length === 0 && !isTyping && !sessionLoaded && (
-            <div className="flex flex-col items-center justify-center py-20 gap-3">
-              <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/20 border-t-transparent" />
-              <p className="text-muted-foreground text-sm">Loading session...</p>
-            </div>
-          )}
           {messages.map((message) => (
             <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
               <div className={`max-w-[80%] rounded-2xl px-4 py-3 ${
                 message.role === "user" ? "bg-purple-600 text-white" : "bg-white/10 text-foreground"
               }`}>
-                {message.role === "ai" && (
-                  <p className="text-xs font-medium text-purple-400 mb-1">AI Interviewer</p>
-                )}
+                {message.role === "ai" && <p className="text-xs font-medium text-purple-400 mb-1">AI Interviewer</p>}
+                
                 <p className="text-sm leading-relaxed">{message.content}</p>
+                
+                {message.translatedContent && (
+                  <div className="mt-2 pt-2 border-t border-white/20 flex items-start gap-2 text-yellow-300">
+                    <Languages className="h-4 w-4 mt-0.5 shrink-0" />
+                    <p className="text-sm italic">{message.translatedContent}</p>
+                  </div>
+                )}
               </div>
             </div>
           ))}
@@ -442,8 +411,9 @@ export function ChatPanel({ sessionId }: Props) {
       <div className="border-t border-white/10 p-4">
         <div className="mx-auto max-w-3xl">
           {isVoiceMode ? (
+            // --- BIG VOICE AI UI ---
             <div className="flex flex-col items-center gap-3">
-              <p className="text-xs text-muted-foreground">
+              <p className="text-xs text-muted-foreground transition-all">
                 {isListening ? "🔴 Listening — speak your answer..." :
                  isSpeaking ? "🔵 AI is speaking, please wait..." :
                  isTyping ? "⏳ AI is thinking..." :
@@ -463,6 +433,7 @@ export function ChatPanel({ sessionId }: Props) {
                 >
                   {isListening ? <MicOff className="h-6 w-6" /> : <Mic className="h-6 w-6" />}
                 </Button>
+                
                 {/* Text fallback */}
                 <div className="flex flex-1 gap-2">
                   <input
@@ -496,19 +467,16 @@ export function ChatPanel({ sessionId }: Props) {
               )}
             </div>
           ) : (
-            // Text mode
+            // --- STANDARD TEXT / LIVE PEER UI ---
             <div>
-              <p className="mb-2 text-xs text-muted-foreground">Press Enter to send</p>
+              <p className="mb-2 text-xs text-muted-foreground">Press Enter to send {isLiveMode && "and translate"}</p>
               <div className="flex items-center gap-3">
                 <input
                   type="text"
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSend();
-                    }
+                    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
                   }}
                   placeholder="Type your answer..."
                   disabled={isTyping || isEnding}
@@ -518,14 +486,9 @@ export function ChatPanel({ sessionId }: Props) {
                   onClick={toggleMic}
                   variant="outline"
                   size="icon"
-                  title="Click to dictate"
-                  className={`h-12 w-12 shrink-0 rounded-xl border-white/10 bg-white/5 hover:bg-white/10 ${
-                    isListening ? "border-red-500 bg-red-500/10" : ""
-                  }`}
+                  className={`h-12 w-12 shrink-0 rounded-xl border-white/10 bg-white/5 hover:bg-white/10 ${isListening ? "border-red-500 bg-red-500/10" : ""}`}
                 >
-                  {isListening
-                    ? <MicOff className="h-5 w-5 text-red-400" />
-                    : <Mic className="h-5 w-5" />}
+                  {isListening ? <MicOff className="h-5 w-5 text-red-400" /> : <Mic className="h-5 w-5" />}
                 </Button>
                 <Button
                   onClick={handleSend}
