@@ -5,9 +5,13 @@ import { useAuthApi } from "@/hooks/use-auth-api";
 import { DOMAIN_LABELS, LANGUAGE_LABELS } from "@/lib/types";
 import { Lightbulb, Info } from "lucide-react";
 
-interface Props { sessionId: string }
+// 1. Add liveTranscript to your Props
+interface Props { 
+  sessionId: string;
+  liveTranscript?: any[]; 
+}
 
-export function InfoPanel({ sessionId }: Props) {
+export function InfoPanel({ sessionId, liveTranscript }: Props) {
   const { get } = useAuthApi();
   const [session, setSession] = useState<any>(null);
   const [error, setError] = useState(false);
@@ -25,6 +29,9 @@ export function InfoPanel({ sessionId }: Props) {
     "Be specific with examples",
   ];
 
+  // 2. Decide whether to use the live prop or the database fallback
+  const activeTranscript = liveTranscript || session?.transcript || [];
+const questionsAsked = activeTranscript.filter((t: any) => t.speaker === "ai" || t.role === "ai").length;
   return (
     <div className="h-full overflow-y-auto p-6 space-y-6">
       <Card className="border-border bg-card/50">
@@ -52,8 +59,9 @@ export function InfoPanel({ sessionId }: Props) {
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Questions asked</span>
+                {/* 3. Render the dynamic count here! */}
                 <span className="font-medium text-foreground">
-                  {session.transcript.filter((t: any) => t.speaker === "ai").length}
+                  {questionsAsked}
                 </span>
               </div>
             </>

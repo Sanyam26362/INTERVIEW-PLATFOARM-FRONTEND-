@@ -22,6 +22,7 @@ interface Message {
 
 interface Props {
   sessionId: string;
+  onTranscriptChange?: (transcript: any[]) => void;
 }
 
 const LANG_MAP: Record<string, string> = {
@@ -29,7 +30,7 @@ const LANG_MAP: Record<string, string> = {
   hi: "hi-IN",
 };
 
-export function ChatPanel({ sessionId }: Props) {
+export function ChatPanel({ sessionId,onTranscriptChange}: Props) {
   const router = useRouter();
   const { getToken } = useAuth();
   const { get, post, patch } = useAuthApi();
@@ -101,6 +102,11 @@ export function ChatPanel({ sessionId }: Props) {
     const interval = setInterval(() => setTimer((p) => p + 1), 1000);
     return () => clearInterval(interval);
   }, []);
+  useEffect(() => {
+    if (onTranscriptChange) {
+      onTranscriptChange(messages);
+    }
+  }, [messages, onTranscriptChange]);
 
   useEffect(() => {
     get(`/sessions/${sessionId}`)
