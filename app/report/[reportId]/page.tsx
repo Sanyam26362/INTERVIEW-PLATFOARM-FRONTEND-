@@ -13,16 +13,20 @@ import type { Report } from "@/lib/types";
 import { ArrowLeft, RotateCcw, Loader2 } from "lucide-react";
 
 /* Normalise the API response so both snake_case and camelCase fields work */
+/* Normalise the API response so both snake_case and camelCase fields work */
 function normalizeReport(raw: any): Report {
-  const s = raw.scores ?? raw.score ?? {};
+  // Check for 'scores', 'score', or assume the properties are flat directly on 'raw'
+  const s = raw.scores ?? raw.score ?? raw ?? {};
+
   return {
     ...raw,
     scores: {
-      communication:       Number(s.communication ?? 0),
-      technicalAccuracy:   Number(s.technicalAccuracy ?? s.technical_accuracy ?? s.technicalaccuracy ?? 0),
-      confidence:          Number(s.confidence ?? 0),
-      clarity:             Number(s.clarity ?? 0),
-      overall:             Number(s.overall ?? 0),
+      communication:     Number(s.communication ?? 0),
+      // This will now successfully catch technical_accuracy even if the object is flat!
+      technicalAccuracy: Number(s.technicalAccuracy ?? s.technical_accuracy ?? s.technicalaccuracy ?? 0),
+      confidence:        Number(s.confidence ?? 0),
+      clarity:           Number(s.clarity ?? 0),
+      overall:           Number(s.overall ?? 0),
     },
     feedback:     raw.feedback ?? "",
     strengths:    raw.strengths ?? [],
