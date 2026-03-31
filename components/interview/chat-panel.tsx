@@ -20,9 +20,12 @@ interface Message {
   translatedContent?: string;
 }
 
+// ✅ NEW: Added onModeChange and onSocketReady
 interface Props {
   sessionId: string;
   onTranscriptChange?: (transcript: any[]) => void;
+  onModeChange?: (mode: "text" | "voice" | "live") => void;
+  onSocketReady?: (socket: any) => void;
 }
 
 const LANG_MAP: Record<string, string> = {
@@ -30,7 +33,8 @@ const LANG_MAP: Record<string, string> = {
   hi: "hi-IN",
 };
 
-export function ChatPanel({ sessionId,onTranscriptChange}: Props) {
+// ✅ NEW: Destructured the new props here
+export function ChatPanel({ sessionId, onTranscriptChange, onModeChange, onSocketReady }: Props) {
   const router = useRouter();
   const { getToken } = useAuth();
   const { get, post, patch } = useAuthApi();
@@ -102,6 +106,7 @@ export function ChatPanel({ sessionId,onTranscriptChange}: Props) {
     const interval = setInterval(() => setTimer((p) => p + 1), 1000);
     return () => clearInterval(interval);
   }, []);
+  
   useEffect(() => {
     if (onTranscriptChange) {
       onTranscriptChange(messages);
@@ -123,6 +128,9 @@ export function ChatPanel({ sessionId,onTranscriptChange}: Props) {
 
         setMode(m);
         modeRef.current = m;
+        // ✅ NEW: Notify the parent page of the mode change
+        onModeChange?.(m);
+        
         setLanguage(l);
         languageRef.current = l;
         setDomain(d);
@@ -167,7 +175,7 @@ export function ChatPanel({ sessionId,onTranscriptChange}: Props) {
         }
       })
       .catch(() => toast.error("Could not load session. Please refresh."));
-  }, [sessionId, initLocalStream, get]);
+  }, [sessionId, initLocalStream, get, onModeChange]); // Added onModeChange to dependencies
 
   useEffect(() => {
     if (socketInitialized.current) return;
@@ -176,7 +184,11 @@ export function ChatPanel({ sessionId,onTranscriptChange}: Props) {
     const setupSocket = async () => {
       const token = await getToken();
       const socket = connectSocket(token || "");
+      
       setActiveSocket(socket);
+      // ✅ NEW: Expose the socket to the parent page
+      onSocketReady?.(socket);
+      
       socket.emit("join_session", { sessionId });
 
       socket.on("peer_message", ({ message }: { message: string }) => {
@@ -254,7 +266,11 @@ export function ChatPanel({ sessionId,onTranscriptChange}: Props) {
       });
     };
 
-    setupSocket();
+    setupSocket().catch((error) => {
+      console.error("Socket setup failed (likely a Clerk token drift):", error);
+    });
+
+    
 
     return () => {
       const s = connectSocket();
@@ -267,7 +283,7 @@ export function ChatPanel({ sessionId,onTranscriptChange}: Props) {
       s.off("error");
       s.off("connect_error");
     };
-  }, [sessionId, getToken, post]);
+  }, [sessionId, getToken, post, onSocketReady]); // Added onSocketReady to dependencies
 
   const setIsListeningBoth = (v: boolean) => {
     setIsListening(v);
