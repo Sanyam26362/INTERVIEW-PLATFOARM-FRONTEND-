@@ -21,7 +21,7 @@ export function DashboardSidebar() {
     <aside className="fixed left-0 top-0 z-40 flex h-full w-64 flex-col border-r border-border bg-card/50 backdrop-blur-sm">
       <div className="flex h-16 items-center border-b border-border px-6">
         <Link href="/" className="text-xl font-bold text-foreground">
-          Interview<span className="text-primary">AI</span>
+          Taiyaari<span className="text-primary">AI</span>
         </Link>
       </div>
 
