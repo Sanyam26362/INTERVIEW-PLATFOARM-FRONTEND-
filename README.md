@@ -1,4 +1,4 @@
-# InterviewAI — Frontend
+#taiyari-ai-frontend
 
 Next.js 16 + TypeScript + Tailwind + shadcn/ui + Clerk Auth
 

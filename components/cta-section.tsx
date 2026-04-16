@@ -15,7 +15,7 @@ export function CTASection() {
         </h2>
 
         <p className="mt-6 text-lg text-muted-foreground max-w-2xl mx-auto">
-          Join thousands of successful candidates who practiced with InterviewAI and landed their dream jobs.
+          Join thousands of successful candidates who practiced with TaiyaariAI and landed their dream jobs.
         </p>
 
         <div className="mt-10">

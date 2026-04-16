@@ -9,7 +9,7 @@ const geist = Geist({ subsets: ["latin"], variable: "--font-geist-sans" });
 const geistMono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono" });
 
 export const metadata: Metadata = {
-  title: "InterviewAI - Practice Interviews in Your Language",
+  title: "TaiyaariAI - Practice Interviews in Your Language",
   description:
     "AI-powered mock interviews in Hindi, Tamil, Telugu, English and more. Get evaluated instantly.",
   generator: "v0.app",
