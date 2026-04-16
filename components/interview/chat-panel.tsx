@@ -459,6 +459,14 @@ export function ChatPanel({ sessionId, onTranscriptChange, onModeChange, onSocke
     stopCall();
     try {
       await patch(`/sessions/${sessionId}/complete`);
+
+      if (modeRef.current === "live") {
+        toast.success("Live interview finished!");
+        disconnectSocket();
+        router.push("/dashboard");
+        return;
+      }
+
       toast.success("Generating your report...");
       const evalRes = await post(`/evaluation/${sessionId}`);
       const reportId = evalRes.data.data._id;

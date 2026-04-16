@@ -55,7 +55,7 @@ export function NewInterviewCard() {
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-6 sm:grid-cols-2">
           <div className="space-y-2">
             <label className="text-sm font-medium text-muted-foreground">Domain</label>
             <Select value={domain} onValueChange={setDomain}>

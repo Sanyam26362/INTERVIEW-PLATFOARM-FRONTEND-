@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { DashboardSidebar } from "@/components/dashboard/sidebar";
 import { StatsCards } from "@/components/dashboard/stats-cards";
 import { NewInterviewCard } from "@/components/dashboard/new-interview-card";
+import { ResumeInterviewCard } from "@/components/dashboard/resume-interview-card";
 import { RecentSessions } from "@/components/dashboard/recent-sessions";
 import { PerformanceChart } from "@/components/dashboard/performance-chart";
 
@@ -21,6 +22,7 @@ export default async function DashboardPage() {
       <DashboardSidebar />
       <main className="ml-64 min-h-screen">
         <div className="p-8">
+          {/* Header */}
           <header className="mb-8">
             <h1 className="text-3xl font-bold text-foreground">
               {greeting}, {firstName} 👋
@@ -30,14 +32,20 @@ export default async function DashboardPage() {
             </p>
           </header>
 
+          {/* Stats Overview */}
           <section className="mb-8">
             <StatsCards />
           </section>
 
+          {/* Interview Options: Standard vs Resume-Based */}
           <section id="new" className="mb-8 scroll-mt-8">
-            <NewInterviewCard />
+            <div className="grid gap-6 xl:grid-cols-2">
+              <NewInterviewCard />
+              <ResumeInterviewCard />
+            </div>
           </section>
 
+          {/* Activity & Performance */}
           <div id="sessions" className="grid gap-8 xl:grid-cols-2 scroll-mt-8">
             <section className="xl:col-span-2 2xl:col-span-1">
               <RecentSessions />
